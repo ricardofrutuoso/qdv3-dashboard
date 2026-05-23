@@ -1,0 +1,153 @@
+//@version=5
+indicator(title="QDV3", shorttitle="QDV3", overlay=false, max_bars_back=500)
+
+// ============================================================
+// QDV3 — Complete System
+// Bands  : Trade(15) / Trend(63) / Tail(174) overlay on price
+// Signals: exhaustion arrows at Trend/Tail extremes
+// MACD   : 12,26,9 with buy/sell highlights
+// ============================================================
+
+// ── INPUTS ──────────────────────────────────────────────────
+trade_len  = input.int(15,  "Trade Period", minval=3,  group="Periods")
+trend_len  = input.int(63,  "Trend Period", minval=10, group="Periods")
+tail_len   = input.int(174, "Tail Period",  minval=50, group="Periods")
+atr_mult   = input.float(0.1, "ATR mult",  minval=0.0, step=0.1, group="Periods")
+
+fast_len   = input.int(12, "MACD Fast",   minval=1, group="MACD")
+slow_len   = input.int(26, "MACD Slow",   minval=1, group="MACD")
+sig_len    = input.int(9,  "MACD Signal", minval=1, group="MACD")
+
+show_trade = input.bool(true,  "Show Trade",    group="Visual")
+show_trend = input.bool(true,  "Show Trend",    group="Visual")
+show_tail  = input.bool(true,  "Show Tail",     group="Visual")
+show_mid   = input.bool(true,  "Show Midlines", group="Visual")
+show_all   = input.bool(false, "Show signals outside extremes", group="Visual")
+
+// ── BANDS ────────────────────────────────────────────────────
+trade_hi    = ta.highest(high, trade_len)
+trade_lo    = ta.lowest(low,   trade_len)
+trade_atr   = ta.atr(trade_len)
+trade_upper = trade_hi + trade_atr * atr_mult
+trade_lower = trade_lo - trade_atr * atr_mult
+trade_mid   = math.avg(trade_hi, trade_lo)
+
+trend_hi    = ta.highest(high, trend_len)
+trend_lo    = ta.lowest(low,   trend_len)
+trend_atr   = ta.atr(trend_len)
+trend_upper = trend_hi + trend_atr * atr_mult
+trend_lower = trend_lo - trend_atr * atr_mult
+trend_mid   = math.avg(trend_hi, trend_lo)
+
+tail_hi     = ta.highest(high, tail_len)
+tail_lo     = ta.lowest(low,   tail_len)
+tail_atr    = ta.atr(tail_len)
+tail_upper  = tail_hi + tail_atr * atr_mult
+tail_lower  = tail_lo - tail_atr * atr_mult
+tail_mid    = math.avg(tail_hi, tail_lo)
+
+// ── EXTREMES WITH PROXIMITY ZONE ─────────────────────────────
+at_upper = high >= (trend_upper - trade_atr) or high >= (tail_upper - trade_atr)
+at_lower = low  <= (trend_lower + trade_atr) or low  <= (tail_lower + trade_atr)
+
+// ── TD SETUP ─────────────────────────────────────────────────
+var int buy_setup  = 0
+var int sell_setup = 0
+buy_setup  := bar_index >= 4 and close < close[4] ? buy_setup  + 1 : 0
+sell_setup := bar_index >= 4 and close > close[4] ? sell_setup + 1 : 0
+
+buy9  = buy_setup  == 9
+sell9 = sell_setup == 9
+
+// ── TD COUNTDOWN ─────────────────────────────────────────────
+var int  buy_count  = 0
+var int  sell_count = 0
+var bool in_buy_cd  = false
+var bool in_sell_cd = false
+
+if buy9
+    in_buy_cd := true
+    buy_count := 0
+if sell9
+    in_sell_cd := true
+    sell_count := 0
+
+if in_buy_cd and bar_index >= 2
+    if close <= low[2]
+        buy_count := buy_count + 1
+    if buy_count >= 13
+        in_buy_cd := false
+
+if in_sell_cd and bar_index >= 2
+    if close >= high[2]
+        sell_count := sell_count + 1
+    if sell_count >= 13
+        in_sell_cd := false
+
+buy13  = buy_count  == 13
+sell13 = sell_count == 13
+
+// ── SIGNAL FILTER ────────────────────────────────────────────
+show_buy9   = buy9   and (show_all or at_lower)
+show_sell9  = sell9  and (show_all or at_upper)
+show_buy13  = buy13  and (show_all or at_lower)
+show_sell13 = sell13 and (show_all or at_upper)
+
+// ── MACD ─────────────────────────────────────────────────────
+[macd_line, signal_line, hist] = ta.macd(close, fast_len, slow_len, sig_len)
+macd_cross_up   = ta.crossover(macd_line,  signal_line)
+macd_cross_down = ta.crossunder(macd_line, signal_line)
+
+is_red   = close < open
+is_green = close >= open
+touch_lower = low  <= (trade_lower + trade_atr)
+touch_upper = high >= (trade_upper - trade_atr)
+
+buy_signal  = is_red   and touch_lower and macd_cross_up
+sell_signal = is_green and touch_upper and macd_cross_down
+
+// ── BAND PLOTS (price scale) ─────────────────────────────────
+p_tail_up = plot(show_tail  ? tail_upper  : na, "Tail Upper",  color.new(#cc44ff, 10), 2, plot.style_stepline, display=display.price_scale + display.status_line)
+p_tail_dn = plot(show_tail  ? tail_lower  : na, "Tail Lower",  color.new(#cc44ff, 10), 2, plot.style_stepline, display=display.price_scale + display.status_line)
+plot(show_tail  and show_mid ? tail_mid  : na,  "Tail Mid",    color.new(#cc44ff, 55), 1, plot.style_stepline, display=display.price_scale + display.status_line)
+fill(p_tail_up, p_tail_dn,  color.new(#6600cc, 92))
+
+p_tren_up = plot(show_trend ? trend_upper : na, "Trend Upper", color.new(color.red,    10), 2, plot.style_stepline, display=display.price_scale + display.status_line)
+p_tren_dn = plot(show_trend ? trend_lower : na, "Trend Lower", color.new(color.green,  10), 2, plot.style_stepline, display=display.price_scale + display.status_line)
+plot(show_trend and show_mid ? trend_mid : na,  "Trend Mid",   color.new(color.gray,   55), 1, plot.style_stepline, display=display.price_scale + display.status_line)
+fill(p_tren_up, p_tren_dn,  color.new(color.gray, 92))
+
+p_trad_up = plot(show_trade ? trade_upper : na, "Trade Upper", color.new(color.orange, 10), 2, plot.style_stepline, display=display.price_scale + display.status_line)
+p_trad_dn = plot(show_trade ? trade_lower : na, "Trade Lower", color.new(color.orange, 10), 2, plot.style_stepline, display=display.price_scale + display.status_line)
+plot(show_trade and show_mid ? trade_mid : na,  "Trade Mid",   color.new(color.orange, 55), 1, plot.style_stepline, display=display.price_scale + display.status_line)
+fill(p_trad_up, p_trad_dn,  color.new(color.orange, 92))
+
+// ── EXHAUSTION ARROWS (price scale) ──────────────────────────
+plotshape(show_buy9,   "Buy 9",   shape.arrowup,   location.belowbar, color.new(color.green,  0), size=size.small,  display=display.price_scale + display.status_line)
+plotshape(show_sell9,  "Sell 9",  shape.arrowdown, location.abovebar, color.new(color.orange, 0), size=size.small,  display=display.price_scale + display.status_line)
+plotshape(show_buy13,  "Buy 13",  shape.arrowup,   location.belowbar, color.new(color.blue,   0), size=size.normal, display=display.price_scale + display.status_line)
+plotshape(show_sell13, "Sell 13", shape.arrowdown, location.abovebar, color.new(color.red,    0), size=size.normal, display=display.price_scale + display.status_line)
+
+// ── MACD PANEL ───────────────────────────────────────────────
+hist_col = hist >= 0 ?
+           (hist > hist[1] ? color.new(#00c853, 0) : color.new(#00c853, 50)) :
+           (hist < hist[1] ? color.new(#ff1744, 0) : color.new(#ff1744, 50))
+
+plot(hist,        "Histogram", hist_col, style=plot.style_columns)
+plot(macd_line,   "MACD",      color.new(color.blue,   0), 2)
+plot(signal_line, "Signal",    color.new(color.orange, 0), 1)
+hline(0, "Zero",  color.new(color.gray, 60), linestyle=hline.style_dashed)
+
+bgcolor(buy_signal  ? color.new(color.green, 70) : na, title="Buy Signal")
+bgcolor(sell_signal ? color.new(color.red,   70) : na, title="Sell Signal")
+
+plotshape(buy_signal,  "MACD Buy",  shape.triangleup,   location.bottom, color.new(color.green, 0), size=size.small)
+plotshape(sell_signal, "MACD Sell", shape.triangledown, location.top,    color.new(color.red,   0), size=size.small)
+
+// ── ALERTS ───────────────────────────────────────────────────
+alertcondition(buy_signal,  "MACD Buy",  "QDV3: Buy — Trade Lower + MACD cross")
+alertcondition(sell_signal, "MACD Sell", "QDV3: Sell — Trade Upper + MACD cross")
+alertcondition(show_buy9,   "Buy 9",     "QDV3: Exhaustion Buy 9")
+alertcondition(show_sell9,  "Sell 9",    "QDV3: Exhaustion Sell 9")
+alertcondition(show_buy13,  "Buy 13",    "QDV3: Exhaustion Buy 13")
+alertcondition(show_sell13, "Sell 13",   "QDV3: Exhaustion Sell 13")

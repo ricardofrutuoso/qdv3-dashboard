@@ -1,503 +1,472 @@
 # ============================================================
-# SCANNER_MACRO.PY v2
-# Hedgeye Quad Framework | Growth + Inflation
-# PPI leads CPI | ROC MoM + QoQ + YoY
-# Monthly + Quarterly Quads | Ticker Suggestions DeGiro
+# SCANNER_MACRO.PY — Hedgeye Quad Framework + FRED API
+# Quad I/II/III/IV | Growth vs Inflation | Risk Matrix
 # ============================================================
 
 import requests
-import pandas as pd
 import numpy as np
-from datetime import datetime
+import pandas as pd
+from datetime import datetime, timedelta
+import yfinance as yf
 import warnings
 warnings.filterwarnings("ignore")
 
 from config import FRED_API_KEY, RUN_DATE
 
-QUAD_COLORS = {
-    1: {"bg": "#052e16", "text": "#4ade80",
-        "label": "QUAD 1 — Growth↑ Inflation↓",
-        "desc":  "Melhor regime para equities de crescimento"},
-    2: {"bg": "#14532d", "text": "#86efac",
-        "label": "QUAD 2 — Growth↑ Inflation↑",
-        "desc":  "Bom para commodities e value"},
-    3: {"bg": "#713f12", "text": "#fbbf24",
-        "label": "QUAD 3 — Growth↓ Inflation↑",
-        "desc":  "Stagflação — ouro, energia, cash"},
-    4: {"bg": "#7f1d1d", "text": "#f87171",
-        "label": "QUAD 4 — Growth↓ Inflation↓",
-        "desc":  "Deflação — bonds longos, ouro"},
-    0: {"bg": "#1e293b", "text": "#94a3b8",
-        "label": "N/A",
-        "desc":  "Dados insuficientes"},
+FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
+
+FRED_SERIES = {
+    # Growth
+    "GDPC1":    "Real GDP QoQ",
+    "INDPRO":   "Industrial Production",
+    "UNRATE":   "Unemployment Rate",
+    "PAYEMS":   "Non-Farm Payrolls",
+    "RETAILSMNSA":"Retail Sales",
+    "HOUST":    "Housing Starts",
+    "UMCSENT":  "Consumer Sentiment",
+    "DSPIC96":  "Real Disposable Income",
+    # Inflation
+    "CPIAUCSL": "CPI YoY",
+    "CPILFESL": "Core CPI",
+    "PCEPI":    "PCE",
+    "PCEPILFE": "Core PCE",
+    "PPIFIS":   "PPI",
+    "MICH":     "Inflation Expectations",
+    "T10YIE":   "10Y Breakeven",
+    "DTWEXBGS": "Dollar Index",
+    # Rates
+    "DFF":      "Fed Funds Rate",
+    "DGS10":    "10Y Treasury",
+    "DGS2":     "2Y Treasury",
+    "DGS30":    "30Y Treasury",
+    "T10Y2Y":   "10Y-2Y Spread",
+    "T10Y3M":   "10Y-3M Spread",
+    # Financial Conditions
+    "NFCI":     "Fin Conditions Chicago",
+    "ANFCI":    "Adj Fin Conditions",
+    "DCOILWTICO":"WTI Crude",
 }
 
-QUAD_ASSETS = {
-    1: {
-        "long":  ["Growth Equities", "Tech", "Consumer Disc"],
-        "short": ["Gold", "Bonds", "Defensivos"],
-        "etfs":  ["QQQ", "SPY", "XLK", "INDA", "QDV5"],
-    },
-    2: {
-        "long":  ["Commodities", "Energy", "Financials", "EM"],
-        "short": ["Long Bonds", "Utilities"],
-        "etfs":  ["XLE", "XLF", "EEM", "GLD"],
-    },
-    3: {
-        "long":  ["Gold", "TIPS", "Energy", "Cash"],
-        "short": ["Growth Equities", "Long Duration"],
-        "etfs":  ["GLD", "TIP", "XLE", "SHY"],
-    },
-    4: {
-        "long":  ["Long Bonds", "Gold", "Utilities", "Cash"],
-        "short": ["Equities", "Commodities", "Credit"],
-        "etfs":  ["TLT", "GLD", "XLU", "IEF"],
-    },
+MARKET_INDICATORS = {
+    "^VIX":      "VIX",
+    "^TNX":      "10Y Yield",
+    "^TYX":      "30Y Yield",
+    "DX-Y.NYB":  "Dollar Index",
+    "GC=F":      "Gold",
+    "CL=F":      "WTI Crude",
+    "SPY":       "S&P 500",
+    "QQQ":       "Nasdaq",
+    "TLT":       "20Y Bond",
+    "HYG":       "High Yield",
+    "LQD":       "IG Corp Bond",
+    "EEM":       "Emerging Mkt",
+    "GLD":       "Gold ETF",
+    "SLV":       "Silver ETF",
+    "BTC-USD":   "Bitcoin",
 }
 
-QUAD_TICKERS = {
-    1: {
-        "US":     [("QQQ","Nasdaq ETF","NASDAQ"),("SPY","S&P500","NYSE"),
-                   ("NVDA","Nvidia","NASDAQ"),("AAPL","Apple","NASDAQ"),
-                   ("MSFT","Microsoft","NASDAQ")],
-        "EU":     [("EXS1.DE","EuroStoxx50","XETRA"),("DBXD.DE","DAX ETF","XETRA"),
-                   ("SAP.DE","SAP","XETRA"),("ASML.AS","ASML","XAMS"),
-                   ("AIR.PA","Airbus","XPAR")],
-        "EM":     [("QDV5.DE","MSCI India","XETRA"),("INDA","India ETF","NYSE"),
-                   ("MCHI","China ETF","NYSE")],
-        "GLOBAL": [("IWDA.AS","MSCI World","XAMS"),("VUSA.AS","S&P500 EUR","XAMS")],
-    },
-    2: {
-        "US":     [("XLE","Energy ETF","NYSE"),("XLF","Financials ETF","NYSE"),
-                   ("GLD","Gold ETF","NYSE"),("SPY","S&P500","NYSE"),
-                   ("XOM","Exxon","NYSE")],
-        "EU":     [("TTE.PA","TotalEnergies","XPAR"),("ENEL.MI","Enel","XMIL"),
-                   ("BAS.DE","BASF","XETRA"),("SAN.MC","Santander","XMAD"),
-                   ("BCP.LS","BCP","XLIS")],
-        "EM":     [("EEM","EM ETF","NYSE"),("MCHI","China ETF","NYSE"),
-                   ("BABA","Alibaba","NYSE")],
-        "GLOBAL": [("GLD","Gold ETF","NYSE"),("IWDA.AS","MSCI World","XAMS")],
-    },
-    3: {
-        "US":     [("GLD","Gold ETF","NYSE"),("TLT","20Y Bond ETF","NYSE"),
-                   ("XLE","Energy ETF","NYSE"),("SLV","Silver ETF","NYSE")],
-        "EU":     [("TTE.PA","TotalEnergies","XPAR"),("GALP.LS","Galp","XLIS"),
-                   ("EQNR.OL","Equinor","XOSL")],
-        "EM":     [("GLD","Gold ETF","NYSE")],
-        "GLOBAL": [("GLD","Gold ETF","NYSE"),("IBCK.DE","Bond Corp EUR","XETRA")],
-    },
-    4: {
-        "US":     [("TLT","20Y Bond ETF","NYSE"),("IEF","7-10Y Bond","NYSE"),
-                   ("GLD","Gold ETF","NYSE")],
-        "EU":     [("EDP.LS","EDP","XLIS"),("ENEL.MI","Enel","XMIL"),
-                   ("VER.VI","Verbund","XWBO")],
-        "EM":     [("QDV5.DE","MSCI India","XETRA"),("INDA","India ETF","NYSE")],
-        "GLOBAL": [("IWDA.AS","MSCI World","XAMS"),("GLD","Gold ETF","NYSE")],
-    },
-}
-
-COUNTRY_REGION = {
-    "US":"US","DE":"EU","FR":"EU","IT":"EU","ES":"EU",
-    "PT":"EU","NL":"EU","BE":"EU","AT":"EU","FI":"EU",
-    "SE":"EU","DK":"EU","NO":"EU","PL":"EU","CZ":"EU",
-    "UK":"EU","CH":"EU","JP":"EM","CN":"EM","IN":"EM",
-    "AU":"US","CA":"US","SG":"EM","HK":"EM",
-}
-
-COUNTRY_SERIES = {
-    "US": ("CPIAUCSL",          "PPIACO",           "INDPRO"),
-    "DE": ("DEUCPIALLMINMEI",   "DEUPPDMMINMEI",    None),
-    "FR": ("FRACPIALLMINMEI",   None,               None),
-    "IT": ("ITACPIALLMINMEI",   None,               None),
-    "ES": ("ESPCIALLMINMEI",    None,               None),
-    "PT": ("PRTCPIALLMINMEI",   None,               None),
-    "NL": ("NLDCPIALLMINMEI",   None,               None),
-    "BE": ("BELCPIALLMINMEI",   None,               None),
-    "AT": ("AUTCPIALLMINMEI",   None,               None),
-    "FI": ("FINCPIALLMINMEI",   None,               None),
-    "SE": ("SWECPIALLMINMEI",   None,               None),
-    "DK": ("DNKCPIALLMINMEI",   None,               None),
-    "NO": ("NORCPIALLMINMEI",   None,               None),
-    "PL": ("POLCPIALLMINMEI",   None,               None),
-    "CZ": ("CZECPIALLMINMEI",   None,               None),
-    "UK": ("GBRCPIALLMINMEI",   "WPPIUKQ",          None),
-    "CH": ("CHECPIALLMINMEI",   None,               None),
-    "JP": ("JPNCPIALLMINMEI",   "JPNPPDMMINMEI",    None),
-    "CN": ("CHNCPIALLMINMEI",   "PIEATI01CNA661N",  None),
-    "AU": ("AUSCPIALLMINMEI",   None,               None),
-    "CA": ("CPALCY01CAM661N",   None,               None),
-    "IN": ("INDCPIALLMINMEI",   None,               None),
-    "SG": ("SGPCPIALLMINMEI",   None,               None),
-    "HK": ("HKGCPIALLMINMEI",   None,               None),
-}
-
-MACRO_COUNTRIES = [
-    ("US","🇺🇸 EUA"),   ("DE","🇩🇪 Alemanha"), ("FR","🇫🇷 França"),
-    ("IT","🇮🇹 Itália"), ("ES","🇪🇸 Espanha"),  ("PT","🇵🇹 Portugal"),
-    ("NL","🇳🇱 Holanda"),("BE","🇧🇪 Bélgica"),  ("AT","🇦🇹 Áustria"),
-    ("FI","🇫🇮 Finlândia"),("SE","🇸🇪 Suécia"),  ("DK","🇩🇰 Dinamarca"),
-    ("NO","🇳🇴 Noruega"), ("PL","🇵🇱 Polónia"),  ("CZ","🇨🇿 Rep. Checa"),
-    ("UK","🇬🇧 Reino Unido"),("CH","🇨🇭 Suíça"), ("JP","🇯🇵 Japão"),
-    ("CN","🇨🇳 China"),  ("AU","🇦🇺 Austrália"), ("CA","🇨🇦 Canadá"),
-    ("IN","🇮🇳 Índia"),  ("SG","🇸🇬 Singapura"), ("HK","🇭🇰 Hong Kong"),
-]
-
-def fetch_fred(series_id, limit=36):
+def fred_get(series_id, limit=12):
     try:
-        url = (
-            f"https://api.stlouisfed.org/fred/series/observations"
-            f"?series_id={series_id}&api_key={FRED_API_KEY}"
-            f"&file_type=json&sort_order=desc&limit={limit}"
-        )
-        r = requests.get(url, timeout=10)
-        if r.status_code != 200:
-            return None
-        data = r.json().get("observations", [])
-        records = []
-        for obs in data:
-            try:
-                records.append({
-                    "date":  pd.to_datetime(obs["date"]),
-                    "value": float(obs["value"])
-                })
-            except:
-                continue
-        if not records:
-            return None
-        return pd.DataFrame(records).sort_values("date").reset_index(drop=True)
+        params = {
+            "series_id":       series_id,
+            "api_key":         FRED_API_KEY,
+            "file_type":       "json",
+            "sort_order":      "desc",
+            "observation_start":"2020-01-01",
+            "limit":           limit,
+        }
+        r = requests.get(FRED_BASE, params=params, timeout=15)
+        if r.status_code != 200: return None
+        obs = r.json().get("observations", [])
+        if not obs: return None
+        df = pd.DataFrame(obs)
+        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+        df = df.dropna(subset=["value"])
+        df["date"] = pd.to_datetime(df["date"])
+        return df.sort_values("date")
     except:
         return None
 
-def calc_roc(df, mom=1, qoq=3, yoy=12):
-    if df is None or len(df) < 2:
-        return None, None, None
-    v     = df["value"].values
-    r_mom = round((v[-1]/v[-1-mom] -1)*100, 2) if len(v) > mom  else None
-    r_qoq = round((v[-1]/v[-1-qoq] -1)*100, 2) if len(v) > qoq  else None
-    r_yoy = round((v[-1]/v[-1-yoy] -1)*100, 2) if len(v) > yoy  else None
-    return r_mom, r_qoq, r_yoy
-
-def roc_arrow(val):
-    if val is None: return "—", "#94a3b8"
-    c = "#4ade80" if val > 0 else "#f87171" if val < 0 else "#fbbf24"
-    a = "▲" if val > 0 else "▼" if val < 0 else "→"
-    return f"{a} {val:+.2f}%", c
-
-def ppi_leads_cpi(ppi_df, cpi_df, lead=3):
+def calc_yoy(series):
     try:
-        if ppi_df is None or cpi_df is None:
-            return None, "N/A"
-        ppi = ppi_df["value"].values
-        cpi = cpi_df["value"].values
-        if len(ppi) <= lead+1 or len(cpi) <= 1:
-            return None, "N/A"
-        ppi_lead = round((ppi[-1-lead]/ppi[-1-lead-1]-1)*100, 2)
-        cpi_now  = round((cpi[-1]/cpi[-2]-1)*100, 2)
-        if ppi_lead > cpi_now + 0.1:
-            sig = "⚠️ INFLAÇÃO A CAMINHO"
-        elif ppi_lead < cpi_now - 0.1:
-            sig = "✅ INFLAÇÃO CONTROLADA"
-        else:
-            sig = "〰️ NEUTRO"
-        return ppi_lead, sig
+        if len(series) < 13: return None
+        current = float(series.iloc[-1])
+        ago12   = float(series.iloc[-13])
+        if ago12 == 0: return None
+        return round((current - ago12) / abs(ago12) * 100, 2)
     except:
-        return None, "N/A"
+        return None
 
-def yield_curve(y2, y10):
-    if y2 is None or y10 is None:
-        return "N/A", "#94a3b8"
-    s = y10 - y2
-    if s > 1.0: return f"NORMAL +{s:.2f}%",  "#4ade80"
-    if s > 0:   return f"FLAT +{s:.2f}%",     "#fbbf24"
-    return             f"INVERTIDA {s:.2f}%", "#f87171"
+def calc_acceleration(series):
+    try:
+        if len(series) < 3: return None
+        c = float(series.iloc[-1])
+        p = float(series.iloc[-2])
+        pp= float(series.iloc[-3])
+        roc1 = c - p
+        roc2 = p - pp
+        return round(roc1 - roc2, 4)
+    except:
+        return None
 
-def detect_quad(growth_roc, inflation_roc):
-    if growth_roc is None or inflation_roc is None:
-        return 0
-    g = growth_roc    > 0
-    i = inflation_roc > 0
-    if g and not i: return 1
-    if g and i:     return 2
-    if not g and i: return 3
-    return 4
+def classify_quad(growth_accel, inflation_accel):
+    if growth_accel > 0 and inflation_accel > 0:
+        return 2, "QUAD 2", "Growth ↑ Inflation ↑", "#fbbf24"
+    if growth_accel > 0 and inflation_accel <= 0:
+        return 1, "QUAD 1", "Growth ↑ Inflation ↓", "#4ade80"
+    if growth_accel <= 0 and inflation_accel > 0:
+        return 3, "QUAD 3", "Growth ↓ Inflation ↑", "#f97316"
+    return 4, "QUAD 4", "Growth ↓ Inflation ↓", "#f43f5e"
 
-def analyse_country(code):
-    result = {"country": code, "quad_m": 0, "quad_q": 0}
-    series = COUNTRY_SERIES.get(code)
-    if not series:
-        return result
-    cpi_id, ppi_id, growth_id = series
-    cpi_df    = fetch_fred(cpi_id)    if cpi_id    else None
-    ppi_df    = fetch_fred(ppi_id)    if ppi_id    else None
-    growth_df = fetch_fred(growth_id) if growth_id else None
-    cpi_mom, cpi_qoq, cpi_yoy = calc_roc(cpi_df)
-    ppi_mom, ppi_qoq, ppi_yoy = calc_roc(ppi_df)
-    gdp_mom, gdp_qoq, gdp_yoy = calc_roc(growth_df)
-    ppi_lead, ppi_signal = ppi_leads_cpi(ppi_df, cpi_df)
-    y2_df  = fetch_fred("DGS2")   if code=="US" else None
-    y10_df = fetch_fred("DGS10")  if code=="US" else None
-    bk_df  = fetch_fred("T10YIE") if code=="US" else None
-    y2  = float(y2_df["value"].iloc[-1])  if y2_df  is not None else None
-    y10 = float(y10_df["value"].iloc[-1]) if y10_df is not None else None
-    bk  = float(bk_df["value"].iloc[-1])  if bk_df  is not None else None
-    yc_label, yc_color = yield_curve(y2, y10)
-    g_mom  = gdp_mom if gdp_mom is not None else cpi_mom
-    i_mom  = ppi_mom if ppi_mom is not None else cpi_mom
-    g_qoq  = gdp_qoq if gdp_qoq is not None else cpi_qoq
-    i_qoq  = ppi_qoq if ppi_qoq is not None else cpi_qoq
-    quad_m = detect_quad(g_mom, i_mom)
-    quad_q = detect_quad(g_qoq, i_qoq)
-    result.update({
-        "quad_m": quad_m,   "quad_q": quad_q,
-        "gdp_mom": gdp_mom, "gdp_qoq": gdp_qoq,
-        "cpi_mom": cpi_mom, "cpi_qoq": cpi_qoq, "cpi_yoy": cpi_yoy,
-        "ppi_mom": ppi_mom, "ppi_qoq": ppi_qoq, "ppi_yoy": ppi_yoy,
-        "ppi_lead": ppi_lead, "ppi_signal": ppi_signal,
-        "y2": y2, "y10": y10, "breakeven": bk,
-        "yc_label": yc_label, "yc_color": yc_color,
-        "region": COUNTRY_REGION.get(code, "GLOBAL"),
-    })
-    return result
+QUAD_PLAYBOOK = {
+    1: {
+        "best":  ["Equities Crescimento","Small Caps","Crypto","Commodities"],
+        "worst": ["Gold","Bonds","Defensivos"],
+        "desc":  "Goldilocks — melhor ambiente para equities de crescimento",
+        "action":"LONG equities crescimento, SHORT bonds, underweight defensivos",
+    },
+    2: {
+        "best":  ["Commodities","Energy","Value Stocks","TIPS","Ouro"],
+        "worst": ["Growth Equities","Long Bonds","Defensivos"],
+        "desc":  "Reflation — commodities e value outperformam",
+        "action":"LONG commodities e energy, SHORT growth e duration longa",
+    },
+    3: {
+        "best":  ["Ouro","Defensivos","Short Duration","Cash","Dólar"],
+        "worst": ["Equities","Commodities Crescimento","Crypto","EM"],
+        "desc":  "Estagflação — o pior ambiente. Dólar e ouro como refúgio",
+        "action":"CASH + GOLD + curto prazo. Reduz tudo o resto.",
+    },
+    4: {
+        "best":  ["Long Bonds","Dólar","Utilities","Consumer Staples"],
+        "worst": ["Commodities","Banks","EM","Energy","Crypto"],
+        "desc":  "Recessão/Deflação — bonds e dólar como refúgio",
+        "action":"LONG duration, SHORT commodities e banks, underweight EM",
+    },
+}
 
-def run_macro_scanner():
-    print("\n" + "="*60)
+def analyse_macro_indicators():
+    print(f"\n{'='*60}")
     print(f"  MACRO SCANNER — {RUN_DATE}")
-    print(f"  Quad Framework | PPI leads CPI | MoM + QoQ + YoY")
+    print(f"  Hedgeye Quad Framework | FRED API")
     print("="*60)
-    results = []
-    for code, name in MACRO_COUNTRIES:
+
+    fred_data = {}
+    print("  → Fetching FRED data...")
+    for series_id, label in FRED_SERIES.items():
+        df = fred_get(series_id)
+        if df is not None and not df.empty:
+            latest    = float(df["value"].iloc[-1])
+            prev      = float(df["value"].iloc[-2]) if len(df)>1 else latest
+            yoy       = calc_yoy(df["value"])
+            accel     = calc_acceleration(df["value"])
+            last_date = str(df["date"].iloc[-1])[:10]
+            fred_data[series_id] = {
+                "label":     label,
+                "value":     latest,
+                "prev":      prev,
+                "change":    round(latest-prev, 4),
+                "yoy":       yoy,
+                "accel":     accel,
+                "date":      last_date,
+                "series":    df["value"].tolist(),
+            }
+            print(f"  ✓ {label:30} {latest:.2f}  "
+                  f"YoY:{yoy:+.2f}%" if yoy else
+                  f"  ✓ {label:30} {latest:.2f}")
+        else:
+            print(f"  ✗ {series_id} — sem dados")
+
+    # Market indicators
+    print("\n  → Market indicators...")
+    market_data = {}
+    for symbol, label in MARKET_INDICATORS.items():
         try:
-            print(f"  → {name}...")
-            r         = analyse_country(code)
-            r["name"] = name
-            results.append(r)
-            qm = r.get("quad_m",0)
-            qq = r.get("quad_q",0)
-            print(f"     Monthly Q{qm} | Quarterly Q{qq}")
-        except Exception as e:
-            print(f"  ⚠️  {name} — erro: {e}")
-    return results
-
-def generate_macro_html(results):
-
-    def fmt(val):
-        if val is None:
-            return "<td style='color:#475569'>—</td>"
-        color = "#4ade80" if val > 0 else \
-                "#f87171" if val < 0 else "#fbbf24"
-        arrow = "▲" if val > 0 else "▼" if val < 0 else "→"
-        return f"<td style='color:{color}'>{arrow} {val:+.2f}%</td>"
-
-    def quad_badge(q):
-        qd = QUAD_COLORS[q]
-        return (f"<span style='background:{qd['bg']};"
-                f"color:{qd['text']};border-radius:4px;"
-                f"padding:2px 8px;font-weight:700;font-size:10px'>"
-                f"Q{q if q else '?'}</span>")
-
-    q1_m = [r["name"] for r in results if r.get("quad_m")==1]
-    q2_m = [r["name"] for r in results if r.get("quad_m")==2]
-    q3_m = [r["name"] for r in results if r.get("quad_m")==3]
-    q4_m = [r["name"] for r in results if r.get("quad_m")==4]
-
-    banners = ""
-    for q, countries in [(1,q1_m),(2,q2_m),(3,q3_m),(4,q4_m)]:
-        if not countries:
+            end   = datetime.today()
+            start = end - timedelta(days=90)
+            df    = yf.download(symbol, start=start, end=end,
+                                progress=False, auto_adjust=True)
+            if df.empty: continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            closes = df["Close"].astype(float).values.flatten()
+            if len(closes) < 2: continue
+            price  = float(closes[-1])
+            p1d    = float(closes[-2])
+            p1w    = float(closes[-6])  if len(closes)>5  else price
+            p1m    = float(closes[-22]) if len(closes)>21 else price
+            market_data[symbol] = {
+                "label":  label,
+                "price":  round(price,2),
+                "chg_1d": round((price-p1d)/p1d*100,2) if p1d else 0,
+                "chg_1w": round((price-p1w)/p1w*100,2) if p1w else 0,
+                "chg_1m": round((price-p1m)/p1m*100,2) if p1m else 0,
+            }
+        except:
             continue
-        qd = QUAD_COLORS[q]
-        banners += f"""
-        <div onclick="filterMacro({q})"
-             style="background:{qd['bg']};color:{qd['text']};
-                    border:1px solid {qd['text']}44;
-                    border-radius:8px;padding:12px 16px;
-                    cursor:pointer;transition:.2s;user-select:none"
-             onmouseover="this.style.opacity='.8'"
-             onmouseout="this.style.opacity='1'">
-            <div style="font-size:9px;letter-spacing:.15em;
-                        margin-bottom:4px">QUAD {q}</div>
-            <div style="font-size:20px;font-weight:900;
-                        margin-bottom:4px">{len(countries)}</div>
-            <div style="font-size:9px;opacity:.8">
-                {qd['label'].split('—')[1].strip()}
-            </div>
-        </div>"""
 
-    banners += f"""
-        <div onclick="filterMacro(0)"
-             style="background:#1e293b;color:#64748b;
-                    border:1px solid #334155;border-radius:8px;
-                    padding:12px 16px;cursor:pointer;
-                    transition:.2s;user-select:none"
-             onmouseover="this.style.opacity='.8'"
-             onmouseout="this.style.opacity='1'">
-            <div style="font-size:9px;letter-spacing:.15em;
-                        margin-bottom:4px">TODOS</div>
-            <div style="font-size:20px;font-weight:900;
-                        margin-bottom:4px">{len(results)}</div>
-            <div style="font-size:9px;opacity:.8">países</div>
-        </div>"""
+    # Quad determination
+    growth_accel    = None
+    inflation_accel = None
+    # Growth proxy: INDPRO acceleration
+    if "INDPRO" in fred_data:
+        growth_accel = fred_data["INDPRO"]["accel"]
+    elif "GDPC1" in fred_data:
+        growth_accel = fred_data["GDPC1"]["accel"]
+    # Inflation proxy: CPI acceleration
+    if "CPIAUCSL" in fred_data:
+        inflation_accel = fred_data["CPIAUCSL"]["accel"]
+    elif "PCEPILFE" in fred_data:
+        inflation_accel = fred_data["PCEPILFE"]["accel"]
 
-    dominant_quad = max(
-        {1:len(q1_m),2:len(q2_m),3:len(q3_m),4:len(q4_m)},
-        key=lambda k: {1:len(q1_m),2:len(q2_m),
-                       3:len(q3_m),4:len(q4_m)}[k]
-    ) if any([q1_m,q2_m,q3_m,q4_m]) else 0
+    if growth_accel is not None and inflation_accel is not None:
+        quad_num, quad_label, quad_desc, quad_color = classify_quad(
+            growth_accel, inflation_accel)
+    else:
+        quad_num = 0; quad_label = "AGUARDA DADOS"
+        quad_desc  = "Dados insuficientes"
+        quad_color = "#94a3b8"
 
-    ticker_html = ""
-    if dominant_quad:
-        qd      = QUAD_COLORS[dominant_quad]
-        tickers = QUAD_TICKERS.get(dominant_quad, {})
-        ticker_html += f"""
-        <div style="background:{qd['bg']}22;
-                    border:1px solid {qd['text']}44;
-                    border-radius:8px;padding:16px;margin-bottom:16px">
-            <div style="color:{qd['text']};font-weight:700;
-                        font-size:12px;margin-bottom:12px">
-                🎯 SUGESTÕES PARA REGIME DOMINANTE — {qd['label']}
-            </div>
-            <div style="display:grid;
-                        grid-template-columns:repeat(4,1fr);gap:8px">"""
-        for region, t_list in tickers.items():
-            ticker_html += f"""
-                <div>
-                    <div style="color:#475569;font-size:9px;
-                                letter-spacing:.1em;margin-bottom:6px">
-                        {region}
-                    </div>"""
-            for sym, name, mkt in t_list[:4]:
-                ticker_html += f"""
-                    <div style="background:#0a1628;border-radius:4px;
-                                padding:6px 8px;margin-bottom:4px;
-                                font-size:10px">
-                        <strong style="color:{qd['text']}">{sym}</strong>
-                        <span style="color:#64748b"> · {name}</span>
-                        <span style="color:#334155;font-size:9px">
-                            [{mkt}]
-                        </span>
-                    </div>"""
-            ticker_html += "</div>"
-        ticker_html += "</div></div>"
+    quad_playbook = QUAD_PLAYBOOK.get(quad_num, {})
 
-    summary_cards = ""
-    for q in [1,2,3,4]:
-        qd          = QUAD_COLORS[q]
-        m_countries = [r["name"] for r in results if r.get("quad_m")==q]
-        q_countries = [r["name"] for r in results if r.get("quad_q")==q]
-        if not m_countries and not q_countries:
-            continue
-        summary_cards += f"""
-        <div style="background:{qd['bg']};
-                    border:1px solid {qd['text']}44;
-                    border-radius:8px;padding:14px">
-            <div style="color:{qd['text']};font-weight:700;
-                        font-size:11px;margin-bottom:8px">
-                {qd['label']}
-            </div>
-            <div style="font-size:9px;color:#94a3b8;margin-bottom:4px">
-                MONTHLY:
-            </div>
-            <div style="color:#cbd5e1;font-size:10px;margin-bottom:8px">
-                {' · '.join(m_countries) if m_countries else '—'}
-            </div>
-            <div style="font-size:9px;color:#94a3b8;margin-bottom:4px">
-                QUARTERLY:
-            </div>
-            <div style="color:#cbd5e1;font-size:10px;margin-bottom:8px">
-                {' · '.join(q_countries) if q_countries else '—'}
-            </div>
-            <div style="color:#64748b;font-size:9px;
-                        border-top:1px solid {qd['text']}22;
-                        padding-top:8px">
-                {qd['desc']}
-            </div>
-        </div>"""
+    # Yield curve
+    yield_curve = None
+    if "DGS10" in fred_data and "DGS2" in fred_data:
+        yield_curve = round(
+            fred_data["DGS10"]["value"] -
+            fred_data["DGS2"]["value"], 3)
 
-    rows = ""
-    for r in results:
-        quad_m = r.get("quad_m", 0)
-        quad_q = r.get("quad_q", 0)
-        qd     = QUAD_COLORS[quad_m]
-        name   = r.get("name","")
-        aligned = quad_m == quad_q and quad_m != 0
-        a_color = "#4ade80" if aligned else "#f59e0b"
-        a_label = "✅ ALINHADO" if aligned else "⚠️ DIVERGENTE"
-        ppi_sig = r.get("ppi_signal","—")
-        ppi_col = "#f87171" if "CAMINHO"    in str(ppi_sig) else \
-                  "#4ade80" if "CONTROLADA" in str(ppi_sig) else "#94a3b8"
-        yc      = r.get("yc_label","—")
-        yc_c    = r.get("yc_color","#94a3b8")
-        bk      = r.get("breakeven")
-        bk_s    = f"{bk:.2f}%" if bk else "—"
+    # Fed Funds
+    fed_funds = fred_data.get("DFF", {}).get("value")
 
-        rows += f"""
-        <tr style="background:{qd['bg']}33"
-            class="macro-row" data-quad="{quad_m}">
-            <td><strong>{name}</strong></td>
-            <td>{quad_badge(quad_m)}</td>
-            <td>{quad_badge(quad_q)}</td>
-            <td style="color:{a_color};font-size:10px">{a_label}</td>
-            {fmt(r.get('gdp_mom'))}
-            {fmt(r.get('gdp_qoq'))}
-            {fmt(r.get('cpi_mom'))}
-            {fmt(r.get('cpi_qoq'))}
-            {fmt(r.get('cpi_yoy'))}
-            {fmt(r.get('ppi_mom'))}
-            {fmt(r.get('ppi_qoq'))}
-            {fmt(r.get('ppi_yoy'))}
-            <td style="color:{ppi_col};font-size:10px">{ppi_sig}</td>
-            <td style="color:{yc_c};font-size:10px">{yc}</td>
-            <td style="color:#94a3b8">{bk_s}</td>
+    # Real Rate = 10Y - Breakeven
+    real_rate = None
+    if "DGS10" in fred_data and "T10YIE" in fred_data:
+        real_rate = round(
+            fred_data["DGS10"]["value"] -
+            fred_data["T10YIE"]["value"], 3)
+
+    print(f"\n  ─────────────────────────────────────")
+    print(f"  QUAD: {quad_label} — {quad_desc}")
+    print(f"  Growth Accel:    {growth_accel:.4f}")
+    print(f"  Inflation Accel: {inflation_accel:.4f}")
+    print(f"  Yield Curve:     {yield_curve}")
+    print(f"  Fed Funds:       {fed_funds}")
+    print(f"  Real Rate:       {real_rate}")
+
+    return {
+        "fred":            fred_data,
+        "market":          market_data,
+        "quad_num":        quad_num,
+        "quad_label":      quad_label,
+        "quad_desc":       quad_desc,
+        "quad_color":      quad_color,
+        "quad_playbook":   quad_playbook,
+        "growth_accel":    growth_accel,
+        "inflation_accel": inflation_accel,
+        "yield_curve":     yield_curve,
+        "fed_funds":       fed_funds,
+        "real_rate":       real_rate,
+    }
+
+def generate_macro_html(macro):
+    if not macro: return ""
+    qn  = macro["quad_num"]
+    ql  = macro["quad_label"]
+    qd  = macro["quad_desc"]
+    qc  = macro["quad_color"]
+    pb  = macro.get("quad_playbook", {})
+    ga  = macro.get("growth_accel")
+    ia  = macro.get("inflation_accel")
+    yc  = macro.get("yield_curve")
+    ff  = macro.get("fed_funds")
+    rr  = macro.get("real_rate")
+
+    # Quad matrix visualization
+    def quad_box(n, label, color, active):
+        border = f"border:2px solid {color};" if active else \
+                 "border:1px solid #1e293b;"
+        bg     = f"background:{color}22;" if active else "background:#0a1628;"
+        scale  = "transform:scale(1.05);" if active else ""
+        return (
+            f"<div style='{bg}{border}{scale}border-radius:8px;"
+            f"padding:12px;text-align:center'>"
+            f"<div style='font-size:10px;color:#475569;margin-bottom:4px'>"
+            f"Q{n}</div>"
+            f"<div style='font-size:12px;font-weight:700;"
+            f"color:{'#fff' if active else '#475569'}'>{label}</div>"
+            f"</div>"
+        )
+
+    q1_box = quad_box(1,"G↑ I↓","#4ade80",qn==1)
+    q2_box = quad_box(2,"G↑ I↑","#fbbf24",qn==2)
+    q3_box = quad_box(3,"G↓ I↑","#f97316",qn==3)
+    q4_box = quad_box(4,"G↓ I↓","#f43f5e",qn==4)
+
+    best_html = "".join(
+        f"<span style='background:#4ade8022;color:#4ade80;"
+        f"font-size:9px;padding:2px 8px;border-radius:4px;"
+        f"margin:2px'>{x}</span>"
+        for x in pb.get("best",[])
+    )
+    worst_html = "".join(
+        f"<span style='background:#f43f5e22;color:#f43f5e;"
+        f"font-size:9px;padding:2px 8px;border-radius:4px;"
+        f"margin:2px'>{x}</span>"
+        for x in pb.get("worst",[])
+    )
+
+    # Fred rows
+    fred_rows = ""
+    key_series = [
+        "CPIAUCSL","CPILFESL","INDPRO","PAYEMS",
+        "UNRATE","DFF","DGS10","DGS2","T10Y2Y","NFCI",
+        "UMCSENT","T10YIE",
+    ]
+    for sid in key_series:
+        d = macro.get("fred",{}).get(sid)
+        if not d: continue
+        chg = d.get("change",0)
+        yoy = d.get("yoy")
+        cc  = "#4ade80" if chg>=0 else "#f43f5e"
+        yc2 = "#4ade80" if (yoy or 0)>=0 else "#f43f5e"
+        fred_rows += f"""
+        <tr>
+          <td>{d['label']}</td>
+          <td><strong>{d['value']:.2f}</strong></td>
+          <td style="color:{cc}">{chg:+.4f}</td>
+          <td style="color:{yc2}">{f'{yoy:+.2f}%' if yoy else '—'}</td>
+          <td style="color:#475569;font-size:9px">{d['date']}</td>
         </tr>"""
 
-    html = f"""
-    <div id="macro" class="tab-content section">
-      <div class="section-title">🌐 MACRO — GROWTH & INFLATION</div>
-
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);
-                  gap:8px;margin-bottom:20px">
-        {banners}
-      </div>
-
-      {ticker_html}
-
-      <div style="display:grid;grid-template-columns:repeat(2,1fr);
-                  gap:8px;margin-bottom:20px">
-        {summary_cards}
-      </div>
-
-      <div class="section-title" style="font-size:11px;margin-top:8px">
-        DADOS POR PAÍS — Monthly Quad | Quarterly Quad | Alinhamento
-      </div>
-      <table id="macro-table">
+    # Market rows
+    mkt_rows = ""
+    for sym, d in macro.get("market",{}).items():
+        c1 = "#4ade80" if d["chg_1d"]>0 else "#f43f5e"
+        c2 = "#4ade80" if d["chg_1w"]>0 else "#f43f5e"
+        c3 = "#4ade80" if d["chg_1m"]>0 else "#f43f5e"
+        mkt_rows += f"""
         <tr>
-          <th>País</th>
-          <th>Quad M</th><th>Quad Q</th><th>Alinhamento</th>
-          <th>GDP MoM</th><th>GDP QoQ</th>
-          <th>CPI MoM</th><th>CPI QoQ</th><th>CPI YoY</th>
-          <th>PPI MoM</th><th>PPI QoQ</th><th>PPI YoY</th>
-          <th>PPI Lead</th><th>Yield Curve</th><th>Breakeven</th>
-        </tr>
-        {rows}
-      </table>
+          <td>{d['label']}</td>
+          <td>{d['price']}</td>
+          <td style="color:{c1}">{d['chg_1d']:+.2f}%</td>
+          <td style="color:{c2}">{d['chg_1w']:+.2f}%</td>
+          <td style="color:{c3}">{d['chg_1m']:+.2f}%</td>
+        </tr>"""
 
-      <div style="color:#334155;font-size:9px;margin-top:12px;
-                  text-align:right">
-        ✅ Alinhado = Monthly e Quarterly no mesmo Quad
-        · Fonte: FRED St. Louis Fed
+    yc_color = "#f43f5e" if (yc or 0)<0 else "#4ade80"
+    rr_color = "#f43f5e" if (rr or 0)<0 else "#4ade80"
+
+    return f"""
+    <div id="macro" class="tab-content section">
+      <div class="section-title">MACRO — HEDGEYE QUAD FRAMEWORK</div>
+
+      <div style="display:grid;grid-template-columns:2fr 1fr;
+                  gap:20px;margin-bottom:20px">
+        <div>
+          <div style="background:linear-gradient(135deg,#0a1628,#1e293b);
+                      border:2px solid {qc}44;border-radius:12px;padding:20px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;
+                        gap:8px;margin-bottom:16px">
+              {q1_box}{q2_box}{q3_box}{q4_box}
+            </div>
+            <div style="text-align:center">
+              <div style="font-size:28px;font-weight:900;color:{qc}">
+                  {ql}</div>
+              <div style="color:{qc};font-size:12px;margin-top:4px">
+                  {qd}</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;
+                          gap:8px;margin-top:12px">
+                <div style="text-align:center">
+                  <div style="font-size:9px;color:#475569">Growth Accel</div>
+                  <div style="font-size:16px;font-weight:700;
+                              color:{'#4ade80' if (ga or 0)>0 else '#f43f5e'}">
+                      {'▲' if (ga or 0)>0 else '▼'} {f'{abs(ga):.4f}' if ga else '—'}</div>
+                </div>
+                <div style="text-align:center">
+                  <div style="font-size:9px;color:#475569">Inflation Accel</div>
+                  <div style="font-size:16px;font-weight:700;
+                              color:{'#f43f5e' if (ia or 0)>0 else '#4ade80'}">
+                      {'▲' if (ia or 0)>0 else '▼'} {f'{abs(ia):.4f}' if ia else '—'}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div style="background:#0a1628;border:1px solid {qc}44;
+                      border-radius:8px;padding:14px;margin-bottom:8px">
+            <div style="font-size:9px;color:#475569;margin-bottom:8px">
+                CHAVE MAESTRA</div>
+            <div style="font-size:10px;color:#64748b;line-height:1.6">
+                {pb.get('action','—')}</div>
+          </div>
+          <div style="background:#0a1628;border:1px solid #1e3a5f;
+                      border-radius:8px;padding:12px;margin-bottom:8px">
+            <div style="font-size:9px;color:#475569;margin-bottom:6px">
+                LONG</div>
+            <div>{best_html}</div>
+          </div>
+          <div style="background:#0a1628;border:1px solid #1e3a5f;
+                      border-radius:8px;padding:12px">
+            <div style="font-size:9px;color:#475569;margin-bottom:6px">
+                SHORT / EVITAR</div>
+            <div>{worst_html}</div>
+          </div>
+        </div>
       </div>
-    </div>
 
-    <script>
-    function filterMacro(quad) {{
-      document.querySelectorAll('.macro-row').forEach(row => {{
-        row.style.display =
-          (quad === 0 || row.dataset.quad == quad) ? '' : 'none';
-      }});
-    }}
-    </script>"""
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);
+                  gap:8px;margin-bottom:20px">
+        <div style="background:#0a1628;border:1px solid #1e3a5f;
+                    border-radius:8px;padding:12px;text-align:center">
+          <div style="font-size:9px;color:#475569">YIELD CURVE (10-2Y)</div>
+          <div style="font-size:20px;font-weight:900;color:{yc_color}">
+              {f'{yc:+.3f}%' if yc else '—'}</div>
+          <div style="font-size:9px;color:#334155">
+              {'Invertida = recessão' if (yc or 0)<0 else 'Normal'}</div>
+        </div>
+        <div style="background:#0a1628;border:1px solid #1e3a5f;
+                    border-radius:8px;padding:12px;text-align:center">
+          <div style="font-size:9px;color:#475569">FED FUNDS</div>
+          <div style="font-size:20px;font-weight:900;color:#94a3b8">
+              {f'{ff:.2f}%' if ff else '—'}</div>
+          <div style="font-size:9px;color:#334155">taxa actual</div>
+        </div>
+        <div style="background:#0a1628;border:1px solid #1e3a5f;
+                    border-radius:8px;padding:12px;text-align:center">
+          <div style="font-size:9px;color:#475569">REAL RATE (10Y-BE)</div>
+          <div style="font-size:20px;font-weight:900;color:{rr_color}">
+              {f'{rr:+.3f}%' if rr else '—'}</div>
+          <div style="font-size:9px;color:#334155">
+              {'Restritivo' if (rr or 0)>1.5 else 'Acomodativo'}</div>
+        </div>
+      </div>
 
-    return html
-
-if __name__ == "__main__":
-    results = run_macro_scanner()
-    print("\n✅ Macro scanner completo!")
+      <div style="display:grid;grid-template-columns:1fr 1fr;
+                  gap:12px;margin-bottom:16px">
+        <div>
+          <div style="font-size:10px;font-weight:700;color:#64748b;
+                      margin-bottom:8px">FRED — INDICADORES CHAVE</div>
+          <div class="table-wrap">
+            <table>
+              <tr><th>Indicador</th><th>Valor</th><th>Δ</th>
+                  <th>YoY</th><th>Data</th></tr>
+              {fred_rows}
+            </table>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:10px;font-weight:700;color:#64748b;
+                      margin-bottom:8px">MERCADOS</div>
+          <div class="table-wrap">
+            <table>
+              <tr><th>Asset</th><th>Preço</th>
+                  <th>1D</th><th>1W</th><th>1M</th></tr>
+              {mkt_rows}
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>"""
